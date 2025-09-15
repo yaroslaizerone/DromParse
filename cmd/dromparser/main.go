@@ -1,40 +1,56 @@
-package dromparser
+package main
 
 import (
-	"dromCrownParse/config"
-	"dromCrownParse/models"
-	"dromCrownParse/parser"
-	"encoding/csv"
+	"dromCrownParse/internal/fetch"
+	"dromCrownParse/internal/utils"
 	"fmt"
 	"log"
-	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
+	"net/url"
+	"regexp"
 	"sync"
-	"time"
+
+	"dromCrownParse/internal/config"
+	"dromCrownParse/internal/models"
+	"dromCrownParse/internal/save"
 )
 
 func main() {
-	cfg := config.LoadConfig()
-	client := &http.Client{
-		Timeout: time.Duration(cfg.RequestTimeout) * time.Second,
-	}
+	// Загружаем конфиг из .env
+	config.LoadConfig()
 
-	var autos []models.Auto
+	cities := config.AppConfig.Cities
+
+	// Парсим фильтры из строки
+	params := url.Values{}
+	params.Add("multiselect[]", "9_4_15_all")
+	params.Add("multiselect[]", "9_4_16_all")
+	params.Add("ph", "1")
+	params.Add("pts", "2")
+	params.Add("damaged", "2")
+	params.Add("unsold", "1")
+	params.Add("whereabouts[]", "0")
+
+	idRe := regexp.MustCompile(`(\d{5,})`)
+	numRe := regexp.MustCompile(`(\d+)`)
+
+	seen := make(map[string]bool)
 	var mu sync.Mutex
+	var autos []models.Auto
+	maxWorkers := config.AppConfig.MaxWorkers
 
-	for _, base := range cfg.Cities {
+	for _, base := range cities {
 		fmt.Printf("\n=== Сканирую город: %s ===\n", base)
+		firstURL := base + "?" + params.Encode()
 
-		firstURL := base + "?" + cfg.Filters
-		doc, err := parser.FetchDocument(client, firstURL, cfg)
+		doc, err := fetch.FetchDocument(firstURL)
 		if err != nil {
-			log.Printf("Ошибка при загрузке страницы: %v", err)
+			log.Printf("Ошибка первого запроса: %v", err)
 			continue
 		}
 
-		maxPage, totalCount := parser.ExtractPaginationInfo(doc)
+		maxPage := utils.GetMaxPage(doc)
+		totalCount := utils.GetTotalCount(doc, numRe)
+
 		fmt.Printf("Всего страниц: %d, объявлений: %d\n", maxPage, totalCount)
 
 		collected := 0
@@ -47,7 +63,7 @@ func main() {
 		}
 		close(pagesCh)
 
-		for w := 0; w < cfg.MaxWorkers; w++ {
+		for w := 0; w < maxWorkers; w++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -55,13 +71,12 @@ func main() {
 					if collected >= totalCount && totalCount > 0 {
 						return
 					}
-					pageURL := fmt.Sprintf("%spage%d/?%s", base, page, cfg.Filters)
-					pageDoc, err := parser.FetchDocument(client, pageURL, cfg)
+					pageURL := fmt.Sprintf("%spage%d/?%s", base, page, params.Encode())
+					doc, err := fetch.FetchDocument(pageURL)
 					if err != nil {
 						continue
 					}
-
-					parser.CollectAutosFromPage(pageDoc, &autos, &mu, resultsCh, &collected, totalCount)
+					fetch.ProcessPage(doc, base, idRe, &seen, &mu, &collected, totalCount, resultsCh)
 				}
 			}()
 		}
@@ -74,79 +89,6 @@ func main() {
 		}
 	}
 
-	if err := SaveResults(cfg.ResultDir, autos); err != nil {
-		log.Fatalf("Ошибка сохранения результатов: %v", err)
-	}
-
+	save.SaveResults(autos, config.AppConfig.ResultDir)
 	fmt.Printf("\nГотово: %d автомобилей\n", len(autos))
-}
-
-// SaveResults сохраняет список автомобилей в CSV-файл в указанной директории.
-//
-// Параметры:
-//   - dir: Путь к директории, в которой будет создан файл "Data.csv". Директория создаётся, если её нет.
-//   - autos: Срез объектов models.Auto, каждый из которых содержит информацию об автомобиле.
-//
-// Формат CSV:
-//
-//	id, url, brand, model, price, price_mark, generation, complectation, mileage, no_mileage_rf,
-//	color, body_type, power, fuel_type, engine_volume
-//
-// Для каждого поля авто, если значение пустое, будет записано "null".
-//
-// Возвращает:
-//   - error: Ошибка создания файла или записи, если она возникла. В случае успешного сохранения возвращается nil.
-func SaveResults(dir string, autos []models.Auto) error {
-	os.MkdirAll(dir, 0755)
-
-	file, err := os.Create(filepath.Join(dir, "Data.csv"))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	writer.Write([]string{
-		"id", "url", "brand", "model", "price", "price_mark", "generation",
-		"complectation", "mileage", "no_mileage_rf", "color", "body_type",
-		"power", "fuel_type", "engine_volume",
-	})
-
-	for _, a := range autos {
-		writer.Write([]string{
-			a.ID,
-			a.URL,
-			nullIfEmpty(a.Brand),
-			nullIfEmpty(a.Model),
-			nullIfEmpty(a.Price),
-			nullIfEmpty(a.PriceMark),
-			nullIfEmpty(a.Generation),
-			nullIfEmpty(a.Complectation),
-			nullIfEmpty(a.Mileage),
-			nullIfEmpty(a.NoMileageRF),
-			nullIfEmpty(a.Color),
-			nullIfEmpty(a.BodyType),
-			nullIfEmpty(a.Power),
-			nullIfEmpty(a.FuelType),
-			nullIfEmpty(a.EngineVolume),
-		})
-	}
-
-	return nil
-}
-
-// nullIfEmpty проверяет строку и возвращает "null", если она пустая или состоит только из пробелов.
-//
-// Параметры:
-//   - s: Исходная строка для проверки.
-//
-// Возвращает:
-//   - string: Исходную строку без изменений, если она не пустая, или "null", если строка пустая или содержит только пробелы.
-func nullIfEmpty(s string) string {
-	if strings.TrimSpace(s) == "" {
-		return "null"
-	}
-	return s
 }
