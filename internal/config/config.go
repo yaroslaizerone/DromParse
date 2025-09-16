@@ -46,6 +46,8 @@ func LoadConfig() {
 }
 
 // --- вспомогательные функции ---
+// getEnv возвращает значение переменной окружения по ключу key.
+// Если переменная не установлена, возвращается defaultVal.
 func getEnv(key string, defaultVal string) string {
 	val := os.Getenv(key)
 	if val == "" {
@@ -54,6 +56,9 @@ func getEnv(key string, defaultVal string) string {
 	return val
 }
 
+// getEnvBool возвращает значение переменной окружения по ключу key в виде bool.
+// Допустимые значения: "true", "1" => true; "false", "0" => false.
+// Если переменная не установлена или имеет неверное значение, возвращается defaultVal.
 func getEnvBool(key string, defaultVal bool) bool {
 	val := strings.ToLower(os.Getenv(key))
 	if val == "true" || val == "1" {
@@ -64,6 +69,9 @@ func getEnvBool(key string, defaultVal bool) bool {
 	return defaultVal
 }
 
+// getEnvInt возвращает значение переменной окружения по ключу key в виде int.
+// Если переменная не установлена или не может быть преобразована в int,
+// выводится предупреждение в лог, и возвращается defaultVal.
 func getEnvInt(key string, defaultVal int) int {
 	val := os.Getenv(key)
 	if val == "" {
@@ -77,6 +85,9 @@ func getEnvInt(key string, defaultVal int) int {
 	return n
 }
 
+// getEnvSlice возвращает значение переменной окружения по ключу key в виде среза строк.
+// Значения переменной должны быть разделены запятыми.
+// Если переменная не установлена, возвращается defaultVal.
 func getEnvSlice(key string, defaultVal []string) []string {
 	val := os.Getenv(key)
 	if val == "" {

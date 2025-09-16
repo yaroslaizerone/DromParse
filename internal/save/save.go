@@ -3,32 +3,44 @@ package save
 import (
 	"dromCrownParse/internal/models"
 	"encoding/csv"
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func SaveResults(autos []models.Auto, resultDir string) {
-	os.MkdirAll(resultDir, 0755)
+// SaveResults сохраняет срез автомобилей autos в CSV файл в директории resultDir.
+// Заголовки CSV соответствуют полям модели Auto. Пустые строки заменяются на "null".
+// Возвращает ошибку, если не удалось создать папку или файл, либо записать данные.
+func SaveResults(autos []models.Auto, resultDir string) error {
+	// Создание директории для результатов
+	if err := os.MkdirAll(resultDir, 0755); err != nil {
+		return fmt.Errorf("ошибка создания директории %s: %w", resultDir, err)
+	}
 
-	file, err := os.Create(filepath.Join(resultDir, "Data.csv"))
+	// Создание CSV файла
+	filePath := filepath.Join(resultDir, "Data.csv")
+	file, err := os.Create(filePath)
 	if err != nil {
-		log.Fatalf("Ошибка создания CSV файла: %v", err)
+		return fmt.Errorf("ошибка создания CSV файла %s: %w", filePath, err)
 	}
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	writer.Write([]string{
+	// Запись заголовков
+	if err := writer.Write([]string{
 		"id", "url", "brand", "model", "price", "price_mark", "generation",
 		"complectation", "mileage", "no_mileage_rf", "color", "body_type",
 		"power", "fuel_type", "engine_volume",
-	})
+	}); err != nil {
+		return fmt.Errorf("ошибка записи заголовков CSV: %w", err)
+	}
 
+	// Запись данных автомобилей
 	for _, a := range autos {
-		writer.Write([]string{
+		record := []string{
 			a.ID,
 			a.URL,
 			nullIfEmpty(a.Brand),
@@ -44,10 +56,17 @@ func SaveResults(autos []models.Auto, resultDir string) {
 			nullIfEmpty(a.Power),
 			nullIfEmpty(a.FuelType),
 			nullIfEmpty(a.EngineVolume),
-		})
+		}
+		if err := writer.Write(record); err != nil {
+			return fmt.Errorf("ошибка записи строки CSV: %w", err)
+		}
 	}
+
+	return nil
 }
 
+// nullIfEmpty возвращает "null", если строка пустая или содержит только пробелы.
+// Иначе возвращает исходную строку.
 func nullIfEmpty(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "null"
